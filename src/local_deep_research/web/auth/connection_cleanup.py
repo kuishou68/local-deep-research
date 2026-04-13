@@ -31,8 +31,8 @@ from ...web.routes.globals import get_usernames_with_active_research
 # WHAT IT LOGS:
 #   - open_fds: total open file descriptors for the process
 #   - pool_engines: number of per-user QueuePool engines
-#   - thread_engines: number of per-thread NullPool engines (should be 0
-#     when idle — nonzero means @thread_cleanup didn't fire)
+#   - pool_checked_out: total connections currently checked out
+#     from all per-user pools (indicates concurrent load)
 #   - protected_users: users with active sessions
 #
 # HOW TO USE: grep "Resource monitor" in container logs. If open_fds

@@ -46,39 +46,38 @@ class DatabaseManager:
         self.has_encryption = self._check_encryption_available()
 
         # ----------------------------------------------------------------
-        # Pool class selection — see ADR-0004 (docs/decisions/0004-nullpool-for-sqlcipher.md)
+        # Pool class selection — see ADR-0004
         #
-        # We use QueuePool (pool_size=10, max_overflow=20) for production
-        # and StaticPool for tests.
+        # We use QueuePool (pool_size=20, max_overflow=40,
+        # pool_timeout=10) for production and StaticPool for tests.
         #
-        # Why pool_size=10 (SQLAlchemy default):
+        # Why these pool sizes:
         #
-        # 1. SQLCipher + WAL mode can leak file handles when connections
-        #    close out of open-order. Fewer pooled connections = fewer
-        #    opportunities for out-of-order closes during pool_recycle.
-        #    See: https://github.com/sqlcipher/android-database-sqlcipher/issues/6
-        #    See: https://github.com/dotnet/efcore/issues/35010
+        # 1. SQLCipher + WAL mode can leak file handles when
+        #    connections close out of open-order. The cleanup
+        #    scheduler periodically calls engine.dispose() to
+        #    release all pooled connections.
         #
-        # 2. SQLite serializes all writes through a single file lock.
-        #    Multiple pooled connections don't improve throughput — they
-        #    just hold FDs (up to 3 per connection in WAL mode).
+        # 2. SQLite serializes all writes through a single file
+        #    lock. Multiple pooled connections don't improve write
+        #    throughput — they buffer concurrent readers/waiters.
         #
-        # 3. The cleanup scheduler periodically calls engine.dispose()
-        #    to release all pooled connections, preventing long-lived
-        #    handles from accumulating over days of idle operation.
+        # Why pool_size=20 and not smaller:
+        # inject_current_user() creates a QueuePool session on
+        # every request via g.db_session. With the UI polling
+        # every 1-2s, background metric writers (token_counter,
+        # search_tracker), and research worker threads all
+        # sharing the same per-user pool, smaller sizes are
+        # easily exhausted — causing pool_timeout errors and
+        # PendingRollbackError cascades. pool_size=20 +
+        # max_overflow=40 (60 total) provides headroom for
+        # concurrent requests, background threads, and multiple
+        # browser tabs.
         #
-        # Why pool_size=10 and not 1: inject_current_user() creates a
-        # QueuePool session on every request via g.db_session. With the
-        # UI polling /api/research/<id>/status every 1-2s plus other
-        # API calls and before_request middleware, pool_size=1
-        # (max_overflow=2, so 3 total) is easily exhausted — causing
-        # 30-second timeouts and PendingRollbackError cascades.
-        # pool_size=10 + max_overflow=20 (30 total) provides ample
-        # headroom for concurrent requests and multiple browser tabs.
-        #
-        # Why not NullPool: SQLCipher's PRAGMA key adds ~0.2ms per
-        # connection open. With 20-30 queries per page load, NullPool
-        # adds a noticeable 4-6ms overhead vs QueuePool's ~1.5ms.
+        # Why not NullPool: SQLCipher's PRAGMA key adds ~0.2ms
+        # per connection open. With 20-30 queries per page load,
+        # NullPool adds a noticeable 4-6ms overhead vs
+        # QueuePool's ~1.5ms.
         # ----------------------------------------------------------------
         self._use_static_pool = bool(os.environ.get("TESTING"))
         self._pool_class = StaticPool if self._use_static_pool else QueuePool
@@ -87,8 +86,8 @@ class DatabaseManager:
         """Get pool configuration kwargs based on pool type.
 
         StaticPool doesn't support pool_size or max_overflow.
-        QueuePool uses moderate sizing to handle concurrent web requests
-        while limiting FD usage. See ADR-0004 for rationale.
+        QueuePool uses moderate sizing to handle concurrent web
+        requests and background threads. See ADR-0004.
         """
         if self._use_static_pool:
             return {}
@@ -787,8 +786,7 @@ class DatabaseManager:
             if engine is None:
                 raise ValueError(f"Failed to open database for user {username}")
 
-        # Use SQLAlchemy's default expire_on_commit=True to match the
-        # previous NullPool path's behavior.
+        # Use SQLAlchemy's default expire_on_commit=True.
         Session = sessionmaker(bind=engine)
         return Session()
 

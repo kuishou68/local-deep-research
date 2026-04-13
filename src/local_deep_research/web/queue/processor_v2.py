@@ -435,8 +435,9 @@ class QueueProcessorV2:
                 logger.exception("Error in queue processor loop")
             finally:
                 # Clean up thread-local database session after each iteration.
-                # This long-running daemon thread repeatedly opens NullPool engines
-                # via get_user_db_session(); without cleanup, FDs accumulate.
+                # Return the thread's session to the shared per-user
+                # QueuePool; without this the checked-out connection
+                # holds a pool slot until GC.
                 try:
                     from ...database.thread_local_session import (
                         cleanup_current_thread,
